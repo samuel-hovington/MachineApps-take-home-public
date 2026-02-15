@@ -83,6 +83,7 @@ class RobotConnection:
         try:
             print(f"Connecting to robot at {self.host}...")
             self._rtde_c = rtde_control.RTDEControlInterface(self.host)
+            print("✓ Control interface connected")
             self._rtde_r = rtde_receive.RTDEReceiveInterface(self.host)
             self._connected = True
             print(f"✓ Connected to robot at {self.host}")

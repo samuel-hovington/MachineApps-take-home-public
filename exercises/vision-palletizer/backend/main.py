@@ -11,6 +11,10 @@ from contextlib import asynccontextmanager
 from robot.connection import RobotConnection
 from api.routes import router as palletizer_router
 
+from robot.motion import MotionController
+from palletizer.state_machine import PalletizerStateMachine
+from api.routes import set_palletizer
+
 
 # Global robot connection instance
 robot_connection: RobotConnection | None = None
@@ -30,6 +34,12 @@ async def lifespan(app: FastAPI):
     else:
         print("⚠ Robot not available yet - will auto-reconnect when robot is powered on")
         print("  → Power on the robot in PolyScope, then call /health to connect")
+    
+    # Initialize motion controller and palletizer
+    motion_controller = MotionController(robot_connection)
+    palletizer = PalletizerStateMachine(motion_controller)
+    set_palletizer(palletizer)  # Make it available to API routes
+    print("✓ Palletizer initialized")
     
     yield
     

@@ -7,6 +7,9 @@ Implements robot motion commands for pick and place operations.
 
 from typing import Optional
 import numpy as np
+import csv
+import os
+from datetime import datetime
 
 from .connection import RobotConnection
 
@@ -34,6 +37,43 @@ class MotionController:
         """
         self.connection = connection
         self._gripper_closed = False
+        
+        # Initialize motion log CSV file
+        self.motion_log_file = "motion_log.csv"
+        self._init_motion_log()
+    
+    def _init_motion_log(self) -> None:
+        """Initialize the motion log CSV file with headers."""
+        file_exists = os.path.exists(self.motion_log_file)
+        
+        if not file_exists:
+            with open(self.motion_log_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Timestamp', 'Motion Type', 'Position/Joints', 'Status'])
+    
+    def _log_motion(self, motion_type: str, data: list, status: str) -> None:
+        """
+        Log motion execution to CSV file.
+        
+        Args:
+            motion_type: "moveL" or "moveJ"
+            data: Position or joint angles as list
+            status: "success" or "failed"
+        """
+        try:
+            with open(self.motion_log_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                timestamp = datetime.now().isoformat()
+                # Format data as comma-separated values in the data column
+                data_str = ','.join([f"{x:.6f}" for x in data])
+                writer.writerow([timestamp, motion_type, data_str, status])
+        except Exception as e:
+            print(f"Warning: Failed to log motion to CSV: {e}")
+    
+    
+        # Initialize motion log CSV file
+        self.motion_log_file = "motion_log.csv"
+        self._init_motion_log()
     
     def move_to_home(self) -> bool:
         """
@@ -42,7 +82,12 @@ class MotionController:
         Returns:
             True if move completed successfully.
         """
-        raise NotImplementedError("move_to_home")
+        # Home configuration: all joints at zero (standard UR home position)
+        home_joints = [0.0, -np.pi/2, np.pi/2, -np.pi/2, -np.pi/2 + np.deg2rad(10), 0.0]
+        home_pose = [0.5, 0.0, 0.6] + self.get_default_orientation()
+        
+        # return self._move_joint(home_joints)
+        return self._move_linear(home_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION)
     
     def move_to_pick(
         self,
@@ -60,7 +105,49 @@ class MotionController:
         Returns:
             True if pick completed successfully.
         """
-        raise NotImplementedError("move_to_pick")
+        # Use default orientation if not provided
+        if orientation is None:
+            orientation = self.get_default_orientation()
+        
+        try:
+            # Convert position to numpy array for easier manipulation
+            pick_position_m = np.array(position)
+            
+            # Execute pick sequence:
+            # 1. Move to approach position (above the pick target)
+            approach_position = pick_position_m.copy()
+            approach_position[2] += self.APPROACH_HEIGHT_OFFSET  # Raise Z by approach height
+            approach_pose = list(approach_position) + orientation
+            
+            print(f"Moving to approach position: {approach_pose[:3]}")
+            if not self._move_linear(approach_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION):
+                return False
+            print("Reached approach position")
+            
+            # 2. Move linearly down to pick position
+            pick_pose = list(pick_position_m) + orientation
+            print(f"Descending to pick position: {pick_position_m}")
+            if not self._move_linear(pick_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION):
+                return False
+            print("Reached pick position")
+            
+            # 3. Close gripper
+            print("Closing gripper")
+            if not self.close_gripper():
+                return False
+            print("Gripper closed")
+            
+            # 4. Retract to approach position
+            print(f"Retracting to approach position: {approach_pose[:3]}")
+            if not self._move_linear(approach_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION):
+                return False
+            print("Retracted from pick position")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error in pick sequence: {e}")
+            return False
     
     def move_to_place(
         self,
@@ -78,7 +165,48 @@ class MotionController:
         Returns:
             True if place completed successfully.
         """
-        raise NotImplementedError("move_to_place")
+        # Use default orientation if not provided
+        if orientation is None:
+            orientation = self.get_default_orientation()
+        
+        try:
+            # Convert position to numpy array for easier manipulation
+            place_position_m = np.array(position)
+            
+            # Execute place sequence:
+            # 1. Move to approach position (above the place target)
+            approach_position = place_position_m.copy()
+            approach_position[2] += self.APPROACH_HEIGHT_OFFSET  # Raise Z by approach height
+            approach_pose = list(approach_position) + orientation
+            
+            print(f"Moving to place approach position: {approach_pose[:3]}")
+            if not self._move_linear(approach_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION):
+                return False
+            print("Reached place approach position")
+            
+            # 2. Move linearly down to place position
+            place_pose = list(place_position_m) + orientation
+            print(f"Descending to place position: {place_position_m}")
+            if not self._move_linear(place_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION):
+                return False
+            
+            # 3. Open gripper to release object
+            print("Opening gripper")
+            if not self.open_gripper():
+                return False
+            print("Gripper opened")
+            
+            # 4. Retract to approach position
+            print(f"Retracting from place position: {approach_pose[:3]}")
+            if not self._move_linear(approach_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION):
+                return False
+            print("Retracted from place position")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error in place sequence: {e}")
+            return False
     
     def open_gripper(self) -> bool:
         """
@@ -121,9 +249,24 @@ class MotionController:
         """
         if self.connection.is_mock_mode():
             print(f"[MOCK] moveL to {pose[:3]}")
+            self._log_motion("moveL", pose, "success (mock)")
             return True
         
-        raise NotImplementedError("_move_linear")
+        try:
+            if self.connection.control is None:
+                print("Error: Robot control interface not available")
+                self._log_motion("moveL", pose, "failed (no interface)")
+                return False
+            
+            # Execute linear move on real robot
+            # asynchronous=False makes the call block until motion completes
+            self.connection.control.moveL(pose, velocity, acceleration, asynchronous=False)
+            self._log_motion("moveL", pose, "success")
+            return True
+        except Exception as e:
+            print(f"Error executing linear move: {e}")
+            self._log_motion("moveL", pose, f"failed ({str(e)})")
+            return False
     
     def _move_joint(
         self,
@@ -144,9 +287,24 @@ class MotionController:
         """
         if self.connection.is_mock_mode():
             print(f"[MOCK] moveJ to {joints}")
+            self._log_motion("moveJ", joints, "success (mock)")
             return True
         
-        raise NotImplementedError("_move_joint")
+        try:
+            if self.connection.control is None:
+                print("Error: Robot control interface not available")
+                self._log_motion("moveJ", joints, "failed (no interface)")
+                return False
+            
+            # Execute joint move on real robot
+            # asynchronous=False makes the call block until motion completes
+            self.connection.control.moveJ(joints, velocity, acceleration, asynchronous=False)
+            self._log_motion("moveJ", joints, "success")
+            return True
+        except Exception as e:
+            print(f"Error executing joint move: {e}")
+            self._log_motion("moveJ", joints, f"failed ({str(e)})")
+            return False
     
     def get_default_orientation(self) -> list[float]:
         """

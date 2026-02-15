@@ -1,0 +1,11 @@
+{
+  "description": "Mocked output from an upstream vision system. Each detection represents a box detected in the camera frame.",
+  "detections": [
+    {
+      "x_mm": 0.0,
+      "y_mm": 0.0,
+      "z_mm": 100.0,
+      "yaw_deg": 0.0
+    }
+  ]
+}

@@ -8,10 +8,30 @@ Documentation: https://docs.vention.io/docs/state-machine
 from enum import Enum, auto
 from typing import Optional
 from dataclasses import dataclass, field
+import numpy as np
 
 from state_machine.core import StateMachine, BaseTriggers
 from state_machine.defs import StateGroup, State, Trigger
 from state_machine.decorators import on_enter_state, on_state_change
+
+class PositionLogger:
+    """Utility class for logging every position sent to the robot. At the end write it to a csv file."""
+    def __init__(self, filename: str = "position_log.csv"):
+        self.filename = filename
+        self.positions = []
+    
+    def log_position(self, position: list[float]):
+        """Log a position (list of floats) to the internal list."""
+        self.positions.append(position)
+    
+    def save_to_csv(self):
+        """Save all logged positions to a CSV file."""
+        import csv
+        with open(self.filename, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(["x", "y", "z"])  # Header
+            writer.writerows(self.positions)
+        print(f"✓ Saved {len(self.positions)} positions to {self.filename}")
 
 
 class PalletizerState(Enum):
@@ -65,6 +85,7 @@ class PalletizerContext:
     current_box_index: int = 0
     total_boxes: int = 0
     pick_position: Optional[tuple[float, float, float]] = None
+    pick_positions: list[tuple[float, float, float]] = field(default_factory=list)
     place_positions: list[tuple[float, float, float]] = field(default_factory=list)
     error_message: str = ""
 
@@ -78,13 +99,15 @@ class PalletizerStateMachine(StateMachine):
         machine.trigger('start')  # Transitions to HOMING
     """
     
-    def __init__(self):
+    def __init__(self, motion_controller=None):
         super().__init__(
             states=States,
             transitions=TRANSITIONS,
             enable_last_state_recovery=False,
         )
         self.context = PalletizerContext()
+        self.motion_controller = motion_controller
+        self._stop_requested = False
     
     @property
     def current_state(self) -> PalletizerState:
@@ -143,11 +166,17 @@ class PalletizerStateMachine(StateMachine):
         """Stop the palletizing sequence and return to IDLE."""
         if self.current_state == PalletizerState.IDLE:
             return True
+        # Set flag to request stop - this will be checked by motion execution
+        self._stop_requested = True
         try:
             self.trigger("stop")
             return True
         except Exception:
             return False
+    
+    def is_stop_requested(self) -> bool:
+        """Check if a stop has been requested."""
+        return self._stop_requested
     
     def reset(self) -> bool:
         """Reset from FAULT state to IDLE."""
@@ -172,35 +201,127 @@ class PalletizerStateMachine(StateMachine):
     @on_enter_state(States.running.homing)
     def on_enter_homing(self, _):
         """
-        TODO: Implement homing sequence:
+        Execute homing sequence:
         1. Command robot to move to home position
         2. Wait for motion to complete
         3. Call self.trigger('finished_homing') when done
         """
-        raise NotImplementedError("on_enter_homing")
+        try:
+            # Check if stop has been requested
+            if self._stop_requested:
+                self._stop_requested = False
+                print("Homing operation cancelled due to stop request")
+                return
+            
+            # Execute home motion
+            if self.motion_controller.move_to_home():
+                # Trigger transition to PICKING state
+                self.trigger('finished_homing')
+            else:
+                # Motion failed, transition to FAULT state
+                self.fault("Failed to move to home position")
+        except Exception as e:
+            self.fault(f"Homing error: {str(e)}")
     
     @on_enter_state(States.running.picking)
     def on_enter_picking(self, _):
         """
-        TODO: Implement pick sequence:
-        1. Get next pick position and transform camera coords to robot frame
-        2. Execute pick motion (approach -> descend -> grip -> retract)
-        3. Call self.trigger('finished_picking') when done
+        Execute pick sequence:
+        1. Get next pick position from camera detections (already transformed to robot frame)
+        2. Execute pick motion via motion controller (approach -> descend -> grip -> retract)
+        3. Trigger 'finished_picking' when done
         """
-        raise NotImplementedError("on_enter_picking")
+        try:
+            # Check if stop has been requested
+            if self._stop_requested:
+                self._stop_requested = False
+                print("Pick operation cancelled due to stop request")
+                return
+            
+            # Check if we have pick positions available
+            if not self.context.pick_positions:
+                self.fault("No pick positions available - load detections first with /vision/load-detections")
+                return
+            
+            # Check if we have more boxes to pick
+            if self.context.current_box_index >= len(self.context.pick_positions):
+                self.fault("Box index out of range - all boxes should have been picked")
+                return
+            
+            # Get the next pick position (already in robot frame, in mm)
+            self.context.pick_position = self.context.pick_positions[self.context.current_box_index]
+            print(f"Picking box {self.context.current_box_index + 1}: position (robot frame) {self.context.pick_position} mm")
+            
+            # Convert from mm to meters for motion controller
+            pick_position_m = np.array(self.context.pick_position) / 1000.0
+            
+            # Execute pick sequence using motion controller
+            if not self.motion_controller.move_to_pick(list(pick_position_m)):
+                self.fault("Pick motion failed")
+                return
+            
+            # Pick sequence completed successfully
+            print(f"Successfully picked box {self.context.current_box_index + 1}")
+            self.trigger('finished_picking')
+            
+        except Exception as e:
+            self.fault(f"Pick error: {str(e)}")
     
     @on_enter_state(States.running.placing)
     def on_enter_placing(self, _):
         """
-        TODO: Implement place sequence:
-        1. Get next place position from grid
-        2. Execute place motion (approach -> descend -> release -> retract)
+        Execute place sequence:
+        1. Get next place position from calculated grid
+        2. Execute place motion via motion controller (approach -> descend -> release -> retract)
         3. Increment current_box_index
-        4. Call self.trigger('cycle_complete') if done, else self.trigger('finished_placing')
+        4. Trigger 'cycle_complete' if all boxes placed, else 'finished_placing' to pick next
         """
-        raise NotImplementedError("on_enter_placing")
+        try:
+            # Check if stop has been requested
+            if self._stop_requested:
+                self._stop_requested = False
+                print("Place operation cancelled due to stop request")
+                return
+            
+            # Check if we have place positions available
+            if not self.context.place_positions:
+                self.fault("No place positions available - configure the palletizer first with /configure")
+                return
+            
+            # Check if we have more boxes to place
+            if self.context.current_box_index >= len(self.context.place_positions):
+                self.fault("Box index out of range - all place positions have been used")
+                return
+            
+            # Get the next place position (already in robot frame, in mm)
+            place_position = self.context.place_positions[self.context.current_box_index]
+            print(f"Placing box {self.context.current_box_index + 1}: position (robot frame) {place_position} mm")
+            
+            # Convert from mm to meters for motion controller
+            place_position_m = np.array(place_position) / 1000.0
+            
+            # Execute place sequence using motion controller
+            if not self.motion_controller.move_to_place(list(place_position_m)):
+                self.fault("Place motion failed")
+                return
+            
+            # Increment the box index after successful placement
+            self.context.current_box_index += 1
+            print(f"Successfully placed box {self.context.current_box_index}")
+            
+            # Check if we've placed all boxes
+            if self.context.current_box_index >= self.context.total_boxes:
+                print(f"All {self.context.total_boxes} boxes placed successfully!")
+                self.trigger('cycle_complete')
+            else:
+                # More boxes to pick and place
+                print(f"Ready to pick next box ({self.context.current_box_index + 1}/{self.context.total_boxes})")
+                self.trigger('finished_placing')
+            
+        except Exception as e:
+            self.fault(f"Place error: {str(e)}")
     
     @on_state_change
     def on_any_state_change(self, old_state: str, new_state: str, trigger: str):
         """Called on every state transition. Useful for logging."""
-        pass
+        print(f"State change: {old_state} -> {new_state} on trigger '{trigger}'")
