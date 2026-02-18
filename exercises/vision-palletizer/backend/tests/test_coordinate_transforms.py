@@ -23,24 +23,21 @@ class TestBuildRotationMatrix:
     
     def test_roll_90_degrees(self):
         """90 degree roll (rotation about X-axis)."""
-        R = build_rotation_matrix(np.pi / 2, 0, 0)  # 90 degrees
-        # After 90° roll, Y→Z, Z→-Y
+        R = build_rotation_matrix(np.pi / 2, 0, 0)
         point = np.array([1, 0, 0])
         rotated = R @ point
         np.testing.assert_array_almost_equal(rotated, [1, 0, 0], decimal=10)
     
     def test_pitch_90_degrees(self):
         """90 degree pitch (rotation about Y-axis)."""
-        R = build_rotation_matrix(0, np.pi / 2, 0)  # 90 degrees
-        # After 90° pitch, X→-Z, Z→X
+        R = build_rotation_matrix(0, np.pi / 2, 0)
         point = np.array([1, 0, 0])
         rotated = R @ point
         np.testing.assert_array_almost_equal(rotated, [0, 0, -1], decimal=10)
     
     def test_yaw_90_degrees(self):
         """90 degree yaw (rotation about Z-axis)."""
-        R = build_rotation_matrix(0, 0, np.pi / 2)  # 90 degrees
-        # After 90° yaw, X→Y, Y→-X
+        R = build_rotation_matrix(0, 0, np.pi / 2)
         point = np.array([1, 0, 0])
         rotated = R @ point
         np.testing.assert_array_almost_equal(rotated, [0, 1, 0], decimal=10)
@@ -49,8 +46,6 @@ class TestBuildRotationMatrix:
         """Rotation matrix should be orthogonal (R @ R.T = I)."""
         roll, pitch, yaw = np.radians(15), np.radians(-10), np.radians(45)
         R = build_rotation_matrix(roll, pitch, yaw)
-        
-        # Check orthogonality: R @ R.T should be identity
         should_be_identity = R @ R.T
         np.testing.assert_array_almost_equal(should_be_identity, np.eye(3), decimal=10)
     

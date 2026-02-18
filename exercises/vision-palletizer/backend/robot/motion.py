@@ -37,6 +37,7 @@ class MotionController:
         """
         self.connection = connection
         self._gripper_closed = False
+        self._stop_requested = False
         
         # Initialize motion log CSV file
         self.motion_log_file = "motion_log.csv"
@@ -70,6 +71,20 @@ class MotionController:
         except Exception as e:
             print(f"Warning: Failed to log motion to CSV: {e}")
     
+    def request_stop(self) -> None:
+        """
+        Request to stop the current movement.
+        Sets the _stop_requested flag to signal movement methods to stop.
+        """
+        self._stop_requested = True
+        print("Stop requested for current movement")
+    
+    def _reset_stop_flag(self) -> None:
+        """
+        Reset the stop requested flag at the start of a new movement.
+        """
+        self._stop_requested = False
+    
     
         # Initialize motion log CSV file
         self.motion_log_file = "motion_log.csv"
@@ -82,11 +97,8 @@ class MotionController:
         Returns:
             True if move completed successfully.
         """
-        # Home configuration: all joints at zero (standard UR home position)
-        home_joints = [0.0, -np.pi/2, np.pi/2, -np.pi/2, -np.pi/2 + np.deg2rad(10), 0.0]
         home_pose = [0.5, 0.0, 0.6] + self.get_default_orientation()
         
-        # return self._move_joint(home_joints)
         return self._move_linear(home_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION)
     
     def move_to_pick(
@@ -245,7 +257,7 @@ class MotionController:
             acceleration: Move acceleration in m/s²
         
         Returns:
-            True if move completed.
+            True if move completed, False if stopped or failed.
         """
         if self.connection.is_mock_mode():
             print(f"[MOCK] moveL to {pose[:3]}")
@@ -258,9 +270,23 @@ class MotionController:
                 self._log_motion("moveL", pose, "failed (no interface)")
                 return False
             
+            # Check if stop was requested before starting movement
+            if self._stop_requested:
+                print("Movement cancelled: stop was requested")
+                self._log_motion("moveL", pose, "cancelled (stop requested)")
+                self._reset_stop_flag()
+                return False
+            
             # Execute linear move on real robot
             # asynchronous=False makes the call block until motion completes
             self.connection.control.moveL(pose, velocity, acceleration, asynchronous=False)
+            
+            # Check if stop was requested after movement completes
+            if self._stop_requested:
+                print("Movement stopped by stop request")
+                self._log_motion("moveL", pose, "stopped")
+                return False
+            
             self._log_motion("moveL", pose, "success")
             return True
         except Exception as e:
@@ -283,7 +309,7 @@ class MotionController:
             acceleration: Joint acceleration in rad/s²
         
         Returns:
-            True if move completed.
+            True if move completed, False if stopped or failed.
         """
         if self.connection.is_mock_mode():
             print(f"[MOCK] moveJ to {joints}")
@@ -296,9 +322,23 @@ class MotionController:
                 self._log_motion("moveJ", joints, "failed (no interface)")
                 return False
             
+            # Check if stop was requested before starting movement
+            if self._stop_requested:
+                print("Movement cancelled: stop was requested")
+                self._log_motion("moveJ", joints, "cancelled (stop requested)")
+                self._reset_stop_flag()
+                return False
+            
             # Execute joint move on real robot
             # asynchronous=False makes the call block until motion completes
             self.connection.control.moveJ(joints, velocity, acceleration, asynchronous=False)
+            
+            # Check if stop was requested after movement completes
+            if self._stop_requested:
+                print("Movement stopped by stop request")
+                self._log_motion("moveJ", joints, "stopped")
+                return False
+            
             self._log_motion("moveJ", joints, "success")
             return True
         except Exception as e:

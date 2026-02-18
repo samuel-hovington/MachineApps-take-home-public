@@ -61,6 +61,8 @@ class Triggers:
     finished_placing = Trigger("finished_placing")
     cycle_complete = Trigger("cycle_complete")
     stop = Trigger("stop")
+    reset = Trigger("reset")
+    waiting_for_detections = Trigger("waiting_for_detections")
 
 
 TRANSITIONS = [
@@ -69,9 +71,15 @@ TRANSITIONS = [
     Triggers.finished_picking.transition(States.running.picking, States.running.placing),
     Triggers.finished_placing.transition(States.running.placing, States.running.picking),
     Triggers.cycle_complete.transition(States.running.placing, "ready"),
+    Triggers.waiting_for_detections.transition(States.running.picking, States.running.picking),
     Triggers.stop.transition(States.running.homing, "ready"),
     Triggers.stop.transition(States.running.picking, "ready"),
     Triggers.stop.transition(States.running.placing, "ready"),
+    Triggers.reset.transition(States.running.homing, "ready"),
+    Triggers.reset.transition(States.running.picking, "ready"),
+    Triggers.reset.transition(States.running.placing, "ready"),
+    Triggers.reset.transition("fault", "ready"),
+    Triggers.reset.transition("ready", "ready"),  # Allow reset from IDLE to IDLE to clear errors
 ]
 
 
@@ -167,22 +175,27 @@ class PalletizerStateMachine(StateMachine):
         if self.current_state == PalletizerState.IDLE:
             return True
         # Set flag to request stop - this will be checked by motion execution
-        self._stop_requested = True
+        self.motion_controller.request_stop()
         try:
             self.trigger("stop")
             return True
         except Exception:
             return False
     
-    def is_stop_requested(self) -> bool:
-        """Check if a stop has been requested."""
-        return self._stop_requested
-    
     def reset(self) -> bool:
         """Reset from FAULT state to IDLE."""
         try:
-            self.trigger(BaseTriggers.RESET.value)
+            self.motion_controller._reset_stop_flag()  # Clear any stop requests before resetting
+            if not self.motion_controller.move_to_home():
+                print("Failed to move to home position during reset")
+                # Motion failed, transition to FAULT state
+                self.fault("Failed to move to home position")
+            print("Palletizer reset to IDLE state")
+            self.trigger("reset")
+            print("State machine reset to IDLE")
             self.context.error_message = ""
+            self.context.current_box_index = 0
+            
             return True
         except Exception:
             return False
@@ -244,8 +257,12 @@ class PalletizerStateMachine(StateMachine):
                 return
             
             # Check if we have more boxes to pick
-            if self.context.current_box_index >= len(self.context.pick_positions):
+            if self.context.current_box_index >= self.context.total_boxes:
                 self.fault("Box index out of range - all boxes should have been picked")
+                return
+            
+            if self.context.current_box_index >= len(self.context.pick_positions):
+                self.trigger("waiting_for_detections")  # Stay in picking state and wait for more detections
                 return
             
             # Get the next pick position (already in robot frame, in mm)
@@ -325,3 +342,5 @@ class PalletizerStateMachine(StateMachine):
     def on_any_state_change(self, old_state: str, new_state: str, trigger: str):
         """Called on every state transition. Useful for logging."""
         print(f"State change: {old_state} -> {new_state} on trigger '{trigger}'")
+        if self._stop_requested:
+            print("Note: stop has been requested, current operation will be cancelled at the next check")

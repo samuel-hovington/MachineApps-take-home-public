@@ -11,6 +11,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
+import threading
 
 from palletizer.state_machine import PalletizerStateMachine
 from palletizer.grid import calculate_place_positions
@@ -153,9 +154,13 @@ async def start_palletizer():
     if palletizer.context.total_boxes == 0:
         raise HTTPException(status_code=400, detail="Palletizer not configured - call /configure first")
     
-    # Start the palletizing sequence
-    if not palletizer.begin():
-        raise HTTPException(status_code=400, detail="Cannot start - palletizer not in IDLE state")
+    if hasattr(palletizer, "_worker_thread") and palletizer._worker_thread.is_alive():
+        raise HTTPException(status_code=400, detail="Already running")
+    
+    # Start the sequence in a thread so this API call returns immediately
+    def worker():
+        palletizer.begin()  # will block in this thread
+    threading.Thread(target=worker, daemon=True).start()
     
     return CommandResponse(
         success=True,
@@ -170,13 +175,21 @@ async def stop_palletizer():
     
     Gracefully stops the operation and returns to IDLE state.
     """
-    raise HTTPException(status_code=501, detail="Not implemented")
+    if palletizer is None:
+        raise HTTPException(status_code=503, detail="Palletizer not initialized")
+
+    # Request stop on the state machine
+    if not palletizer.stop():
+        raise HTTPException(status_code=400, detail="Failed to stop palletizer")
+    
+
+    return CommandResponse(success=True, message="Stop requested; palletizer returning to IDLE")
 
 
 @router.post("/reset", response_model=CommandResponse)
 async def reset_palletizer():
     """
-    Reset from FAULT state.
+    Reset state to IDLE.
     
     Clears the fault and returns to IDLE state.
     """
@@ -184,11 +197,11 @@ async def reset_palletizer():
         raise HTTPException(status_code=503, detail="Palletizer not initialized")
     
     if not palletizer.reset():
-        raise HTTPException(status_code=400, detail="Cannot reset - palletizer not in FAULT state")
+        raise HTTPException(status_code=400, detail="Reset failed, please try again")
     
     return CommandResponse(
         success=True,
-        message="Palletizer reset from FAULT state to IDLE"
+        message="Palletizer reset to IDLE"
     )
 
 
@@ -227,10 +240,7 @@ async def simulate_vision_detection(detection: VisionDetection):
     if palletizer is None:
         raise HTTPException(status_code=503, detail="Palletizer not initialized")
     
-    # Store the detection in the palletizer context
-    # Convert to tuple (x, y, z) in mm
     detection_in_camera = np.array([detection.x_mm, detection.y_mm, detection.z_mm])
-    box_angle_rad = np.radians(detection.yaw_deg)
     detection_in_robot = camera_to_robot(detection_in_camera)
     palletizer.context.pick_positions.append(tuple(detection_in_robot))
     
