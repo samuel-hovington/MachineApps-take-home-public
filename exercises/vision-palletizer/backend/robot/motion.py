@@ -6,6 +6,7 @@ Implements robot motion commands for pick and place operations.
 """
 
 from typing import Optional
+import threading
 import numpy as np
 import csv
 import os
@@ -37,7 +38,8 @@ class MotionController:
         """
         self.connection = connection
         self._gripper_closed = False
-        self._stop_requested = False
+        # Use a threading.Event for thread-safe stop signaling
+        self._stop_requested = threading.Event()
         
         # Initialize motion log CSV file
         self.motion_log_file = "motion_log.csv"
@@ -76,14 +78,14 @@ class MotionController:
         Request to stop the current movement.
         Sets the _stop_requested flag to signal movement methods to stop.
         """
-        self._stop_requested = True
+        self._stop_requested.set()
         print("Stop requested for current movement")
     
     def _reset_stop_flag(self) -> None:
         """
         Reset the stop requested flag at the start of a new movement.
         """
-        self._stop_requested = False
+        self._stop_requested.clear()
     
     
         # Initialize motion log CSV file
@@ -276,7 +278,7 @@ class MotionController:
                 return False
             
             # Check if stop was requested before starting movement
-            if self._stop_requested:
+            if self._stop_requested.is_set():
                 print("Movement cancelled: stop was requested")
                 self._log_motion("moveL", pose, "cancelled (stop requested)")
                 self._reset_stop_flag()
@@ -287,7 +289,7 @@ class MotionController:
             self.connection.control.moveL(pose, velocity, acceleration, asynchronous=False)
             
             # Check if stop was requested after movement completes
-            if self._stop_requested:
+            if self._stop_requested.is_set():
                 print("Movement stopped by stop request")
                 self._log_motion("moveL", pose, "stopped")
                 return False
@@ -328,7 +330,7 @@ class MotionController:
                 return False
             
             # Check if stop was requested before starting movement
-            if self._stop_requested:
+            if self._stop_requested.is_set():
                 print("Movement cancelled: stop was requested")
                 self._log_motion("moveJ", joints, "cancelled (stop requested)")
                 self._reset_stop_flag()
@@ -339,7 +341,7 @@ class MotionController:
             self.connection.control.moveJ(joints, velocity, acceleration, asynchronous=False)
             
             # Check if stop was requested after movement completes
-            if self._stop_requested:
+            if self._stop_requested.is_set():
                 print("Movement stopped by stop request")
                 self._log_motion("moveJ", joints, "stopped")
                 return False

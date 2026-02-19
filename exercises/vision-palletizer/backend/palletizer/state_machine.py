@@ -9,6 +9,7 @@ from enum import Enum, auto
 from typing import Optional
 from dataclasses import dataclass, field
 import numpy as np
+import threading
 
 from state_machine.core import StateMachine, BaseTriggers
 from state_machine.defs import StateGroup, State, Trigger
@@ -78,7 +79,6 @@ TRANSITIONS = [
     Triggers.reset.transition(States.running.homing, "ready"),
     Triggers.reset.transition(States.running.picking, "ready"),
     Triggers.reset.transition(States.running.placing, "ready"),
-    Triggers.reset.transition("fault", "ready"),
     Triggers.reset.transition("ready", "ready"),  # Allow reset from IDLE to IDLE to clear errors
 ]
 
@@ -115,7 +115,8 @@ class PalletizerStateMachine(StateMachine):
         )
         self.context = PalletizerContext()
         self.motion_controller = motion_controller
-        self._stop_requested = False
+        # Use threading.Event for thread-safe stop signaling
+        self._stop_requested = threading.Event()
     
     @property
     def current_state(self) -> PalletizerState:
@@ -173,9 +174,23 @@ class PalletizerStateMachine(StateMachine):
     def stop(self) -> bool:
         """Stop the palletizing sequence and return to IDLE."""
         if self.current_state == PalletizerState.IDLE:
+            # If already idle, ensure any previous stop flags are cleared
+            self._stop_requested.clear()
+            try:
+                # reset controller stop flag if available
+                if self.motion_controller:
+                    self.motion_controller._reset_stop_flag()
+            except Exception:
+                pass
             return True
-        # Set flag to request stop - this will be checked by motion execution
-        self.motion_controller.request_stop()
+        # Set flag to request stop - this will be checked by state handlers
+        self._stop_requested.set()
+        # Also request stop on the motion controller (if present)
+        try:
+            if self.motion_controller:
+                self.motion_controller.request_stop()
+        except Exception:
+            pass
         try:
             self.trigger("stop")
             return True
@@ -221,8 +236,8 @@ class PalletizerStateMachine(StateMachine):
         """
         try:
             # Check if stop has been requested
-            if self._stop_requested:
-                self._stop_requested = False
+            if self._stop_requested.is_set():
+                self._stop_requested.clear()
                 print("Homing operation cancelled due to stop request")
                 return
             
@@ -246,8 +261,8 @@ class PalletizerStateMachine(StateMachine):
         """
         try:
             # Check if stop has been requested
-            if self._stop_requested:
-                self._stop_requested = False
+            if self._stop_requested.is_set():
+                self._stop_requested.clear()
                 print("Pick operation cancelled due to stop request")
                 return
             
@@ -299,8 +314,8 @@ class PalletizerStateMachine(StateMachine):
         """
         try:
             # Check if stop has been requested
-            if self._stop_requested:
-                self._stop_requested = False
+            if self._stop_requested.is_set():
+                self._stop_requested.clear()
                 print("Place operation cancelled due to stop request")
                 return
             
@@ -346,5 +361,5 @@ class PalletizerStateMachine(StateMachine):
     def on_any_state_change(self, old_state: str, new_state: str, trigger: str):
         """Called on every state transition. Useful for logging."""
         print(f"State change: {old_state} -> {new_state} on trigger '{trigger}'")
-        if self._stop_requested:
+        if self._stop_requested.is_set():
             print("Note: stop has been requested, current operation will be cancelled at the next check")

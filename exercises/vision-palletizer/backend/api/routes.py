@@ -240,9 +240,9 @@ async def simulate_vision_detection(detection: VisionDetection):
     if palletizer is None:
         raise HTTPException(status_code=503, detail="Palletizer not initialized")
     yaw = camera_yaw_to_robot_yaw(detection.yaw_deg)
-    detection_in_camera = np.array([detection.x_mm, detection.y_mm, detection.z_mm, yaw])
+    detection_in_camera = np.array([detection.x_mm, detection.y_mm, detection.z_mm])
     detection_in_robot = camera_to_robot(detection_in_camera)
-    palletizer.context.pick_positions.append(tuple(detection_in_robot + [yaw]))
+    palletizer.context.pick_positions.append((float(detection_in_robot[0]), float(detection_in_robot[1]), float(detection_in_robot[2]), yaw))
     
     return CommandResponse(
         success=True,
