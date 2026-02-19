@@ -15,7 +15,7 @@ import threading
 
 from palletizer.state_machine import PalletizerStateMachine
 from palletizer.grid import calculate_place_positions
-from transforms.coordinate import camera_to_robot
+from transforms.coordinate import camera_to_robot, camera_yaw_to_robot_yaw
 
 router = APIRouter()
 
@@ -239,10 +239,10 @@ async def simulate_vision_detection(detection: VisionDetection):
     """
     if palletizer is None:
         raise HTTPException(status_code=503, detail="Palletizer not initialized")
-    
-    detection_in_camera = np.array([detection.x_mm, detection.y_mm, detection.z_mm])
+    yaw = camera_yaw_to_robot_yaw(detection.yaw_deg)
+    detection_in_camera = np.array([detection.x_mm, detection.y_mm, detection.z_mm, yaw])
     detection_in_robot = camera_to_robot(detection_in_camera)
-    palletizer.context.pick_positions.append(tuple(detection_in_robot))
+    palletizer.context.pick_positions.append(tuple(detection_in_robot + [yaw]))
     
     return CommandResponse(
         success=True,
@@ -277,10 +277,11 @@ async def load_detections_from_file():
         for d in detections_list:
             camera_pos = np.array([d["x_mm"], d["y_mm"], d["z_mm"]], dtype=float)
             robot_pos = camera_to_robot(camera_pos)
+            robot_yaw = camera_yaw_to_robot_yaw(d.get("yaw_deg", 0.0))
             
             # Store as plain lists for JSON serialization
             detections_in_camera.append([float(camera_pos[0]), float(camera_pos[1]), float(camera_pos[2])])
-            detections_in_robot.append((float(robot_pos[0]), float(robot_pos[1]), float(robot_pos[2])))
+            detections_in_robot.append((float(robot_pos[0]), float(robot_pos[1]), float(robot_pos[2]), robot_yaw))
         
         # Store the transformed positions in palletizer context
         if palletizer is not None:
@@ -290,7 +291,7 @@ async def load_detections_from_file():
             "success": True,
             "count": len(detections_in_camera),
             "detections_camera_frame": detections_in_camera,
-            "detections_robot_frame": [[float(pos[0]), float(pos[1]), float(pos[2])] for pos in detections_in_robot]
+            "detections_robot_frame": [[float(pos[0]), float(pos[1]), float(pos[2]), float(pos[3])] for pos in detections_in_robot]
         }
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON in camera detections file: {str(e)}")

@@ -92,9 +92,9 @@ class PalletizerContext:
     pallet_origin_mm: tuple[float, float, float] = (400.0, -200.0, 100.0)
     current_box_index: int = 0
     total_boxes: int = 0
-    pick_position: Optional[tuple[float, float, float]] = None
-    pick_positions: list[tuple[float, float, float]] = field(default_factory=list)
-    place_positions: list[tuple[float, float, float]] = field(default_factory=list)
+    pick_position: Optional[tuple[float, float, float, float]] = None
+    pick_positions: list[tuple[float, float, float, float]] = field(default_factory=list)
+    place_positions: list[tuple[float, float, float, float]] = field(default_factory=list)
     error_message: str = ""
 
 
@@ -267,13 +267,17 @@ class PalletizerStateMachine(StateMachine):
             
             # Get the next pick position (already in robot frame, in mm)
             self.context.pick_position = self.context.pick_positions[self.context.current_box_index]
-            print(f"Picking box {self.context.current_box_index + 1}: position (robot frame) {self.context.pick_position} mm")
+            print(f"Picking box {self.context.current_box_index + 1}: position (robot frame) {self.context.pick_position}")
             
             # Convert from mm to meters for motion controller
-            pick_position_m = np.array(self.context.pick_position) / 1000.0
+            pick_position_m = np.array(self.context.pick_position[:-1]) / 1000.0
+            yaw_rad = np.radians(self.context.pick_position[-1])  # Extract yaw from the last element
+            
+            #compute the orientation for picking based on the yaw (assuming we want to keep the gripper pointing down)
+            pick_orientation = [np.pi * np.cos(yaw_rad), np.pi * np.sin(yaw_rad), 0.0]
             
             # Execute pick sequence using motion controller
-            if not self.motion_controller.move_to_pick(list(pick_position_m)):
+            if not self.motion_controller.move_to_pick(list(pick_position_m), pick_orientation):
                 self.fault("Pick motion failed")
                 return
             

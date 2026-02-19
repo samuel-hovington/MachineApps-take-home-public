@@ -133,3 +133,37 @@ def build_homogeneous_transform(
     transform[:3, 3] = translation
     
     return transform
+
+
+def camera_yaw_to_robot_yaw(yaw_deg: float) -> float:
+    """
+    Convert a yaw angle from camera frame to robot frame using homogeneous transform.
+    
+    Args:
+        yaw_deg: Yaw angle in camera frame (degrees)
+    
+    Returns:
+        Equivalent yaw angle in robot frame (degrees), rotation about robot Z-axis
+    """
+    # Build rotation from camera to robot
+    roll_deg, pitch_deg, yaw_deg_cam = CAMERA_ORIENTATION_DEG
+    roll = np.radians(roll_deg)
+    pitch = np.radians(pitch_deg)
+    yaw_cam = np.radians(yaw_deg_cam)
+    
+    rotation = build_rotation_matrix(roll, pitch, yaw_cam)
+    
+    # Build homogeneous transform (translation doesn't affect direction)
+    T = build_homogeneous_transform(rotation, CAMERA_POSITION)
+    
+    # Direction vector at camera yaw in camera XY plane (homogeneous)
+    yaw_rad = np.radians(yaw_deg)
+    dir_camera = np.array([np.cos(yaw_rad), np.sin(yaw_rad), 0.0, 0.0])
+    
+    # Transform direction to robot frame (w=0 means direction, not position)
+    dir_robot = T @ dir_camera
+    
+    # Extract yaw: angle in robot XY plane
+    yaw_robot_rad = np.arctan2(dir_robot[1], dir_robot[0])
+    
+    return np.degrees(yaw_robot_rad)

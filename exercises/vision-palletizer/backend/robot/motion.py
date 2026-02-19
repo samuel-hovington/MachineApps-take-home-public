@@ -131,7 +131,7 @@ class MotionController:
             approach_position[2] += self.APPROACH_HEIGHT_OFFSET  # Raise Z by approach height
             approach_pose = list(approach_position) + orientation
             
-            print(f"Moving to approach position: {approach_pose[:3]}")
+            print(f"Moving to approach position: {approach_pose}")
             if not self._move_linear(approach_pose, self.DEFAULT_VELOCITY, self.DEFAULT_ACCELERATION):
                 return False
             print("Reached approach position")
@@ -259,6 +259,11 @@ class MotionController:
         Returns:
             True if move completed, False if stopped or failed.
         """
+        if not self.validate_pose(pose):
+            print(f"Invalid target pose: {pose[:3]}")
+            self._log_motion("moveL", pose, "failed (invalid pose)")
+            return False
+        
         if self.connection.is_mock_mode():
             print(f"[MOCK] moveL to {pose[:3]}")
             self._log_motion("moveL", pose, "success (mock)")
@@ -358,3 +363,24 @@ class MotionController:
         depending on your tool frame setup.
         """
         return [0.0, np.pi, 0.0]
+    
+    def validate_pose(self, pose: list[float]) -> bool:
+        """
+        Validate that the target pose is within robot's reachable workspace.
+        
+        Args:
+            pose: [x, y, z, rx, ry, rz] target pose
+        
+        Returns:
+            True if pose is valid, False otherwise.
+        """
+        x, y, z = pose[:3]
+        # Simple spherical workspace check (UR typically has a reach of ~850mm)
+        if np.linalg.norm([x, y, z]) > 0.85:
+            print(f"Pose {pose[:3]} is out of reach")
+            return False
+        
+        if z < 0.0:
+            print(f"Pose {pose[:3]} is below the floor level")
+            return False
+        return True
